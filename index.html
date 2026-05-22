@@ -139,7 +139,7 @@
   <button id="fullscreen-btn" type="button">⛶</button>
 
   <script>
-    const BUILD_VERSION = "2.0.14";
+    const BUILD_VERSION = "2.0.15";
     const GAME_WIDTH = 1920;
     const GAME_HEIGHT = 1080;
     const GAME_ASPECT = GAME_WIDTH / GAME_HEIGHT;
@@ -162,6 +162,17 @@
     let unityInstanceRef = null;
     let lastStableViewport = null;
     let lastOrientationKey = "";
+    let layoutState = {
+      isPortrait: false,
+      viewportWidth: 0,
+      viewportHeight: 0,
+      virtualWidth: 0,
+      virtualHeight: 0,
+      frameWidth: 0,
+      frameHeight: 0,
+      frameLeft: 0,
+      frameTop: 0
+    };
 
     function getRawViewportSize() {
       const viewport = window.visualViewport;
@@ -250,6 +261,18 @@
       frameWidth = Math.floor(frameWidth);
       frameHeight = Math.floor(frameHeight);
 
+      layoutState = {
+        isPortrait,
+        viewportWidth: size.width,
+        viewportHeight: size.height,
+        virtualWidth,
+        virtualHeight,
+        frameWidth,
+        frameHeight,
+        frameLeft: Math.floor((virtualWidth - frameWidth) / 2),
+        frameTop: Math.floor((virtualHeight - frameHeight) / 2)
+      };
+
       container.style.width = frameWidth + "px";
       container.style.height = frameHeight + "px";
 
@@ -312,6 +335,168 @@
       matchWebGLToCanvasSize: false,
       devicePixelRatio: 1
     };
+
+    // Keep native input events trusted, but rewrite their coordinates before Unity reads them.
+    // This fixes portrait clicks after CSS rotation without using an overlay/proxy.
+    const nativeCanvasGetBoundingClientRect = canvas.getBoundingClientRect.bind(canvas);
+
+    function makeRect(left, top, width, height) {
+      if (typeof DOMRect === "function") {
+        return new DOMRect(left, top, width, height);
+      }
+
+      return {
+        left,
+        top,
+        width,
+        height,
+        right: left + width,
+        bottom: top + height,
+        x: left,
+        y: top
+      };
+    }
+
+    canvas.getBoundingClientRect = function () {
+      if (!layoutState.isPortrait) {
+        return nativeCanvasGetBoundingClientRect();
+      }
+
+      return makeRect(
+        layoutState.frameLeft,
+        layoutState.frameTop,
+        layoutState.frameWidth,
+        layoutState.frameHeight
+      );
+    };
+
+    function mapClientPointToVirtualLandscape(clientX, clientY) {
+      if (!layoutState.isPortrait) {
+        return { x: clientX, y: clientY };
+      }
+
+      const centerX = layoutState.viewportWidth / 2;
+      const centerY = layoutState.viewportHeight / 2;
+      const dx = clientX - centerX;
+      const dy = clientY - centerY;
+
+      // Inverse of rotate(90deg) around the center.
+      return {
+        x: layoutState.virtualWidth / 2 + dy,
+        y: layoutState.virtualHeight / 2 - dx
+      };
+    }
+
+    function defineCoordinateGetter(object, propertyName, value) {
+      try {
+        Object.defineProperty(object, propertyName, {
+          configurable: true,
+          get: () => value
+        });
+      } catch (error) {
+        // Some browsers expose read-only, non-configurable event fields.
+        // In that case, leave the native value untouched instead of breaking input.
+      }
+    }
+
+    function patchMouseOrPointerCoordinates(event) {
+      if (!layoutState.isPortrait || typeof event.clientX !== "number") {
+        return;
+      }
+
+      const point = mapClientPointToVirtualLandscape(event.clientX, event.clientY);
+      const pageOffsetX = window.pageXOffset || document.documentElement.scrollLeft || 0;
+      const pageOffsetY = window.pageYOffset || document.documentElement.scrollTop || 0;
+
+      defineCoordinateGetter(event, "clientX", point.x);
+      defineCoordinateGetter(event, "clientY", point.y);
+      defineCoordinateGetter(event, "pageX", point.x + pageOffsetX);
+      defineCoordinateGetter(event, "pageY", point.y + pageOffsetY);
+      defineCoordinateGetter(event, "screenX", point.x);
+      defineCoordinateGetter(event, "screenY", point.y);
+      defineCoordinateGetter(event, "offsetX", point.x - layoutState.frameLeft);
+      defineCoordinateGetter(event, "offsetY", point.y - layoutState.frameTop);
+    }
+
+    function cloneTouchWithMappedCoordinates(touch) {
+      const point = mapClientPointToVirtualLandscape(touch.clientX, touch.clientY);
+      const pageOffsetX = window.pageXOffset || document.documentElement.scrollLeft || 0;
+      const pageOffsetY = window.pageYOffset || document.documentElement.scrollTop || 0;
+
+      return {
+        identifier: touch.identifier,
+        target: touch.target,
+        clientX: point.x,
+        clientY: point.y,
+        pageX: point.x + pageOffsetX,
+        pageY: point.y + pageOffsetY,
+        screenX: point.x,
+        screenY: point.y,
+        radiusX: touch.radiusX || 1,
+        radiusY: touch.radiusY || 1,
+        rotationAngle: touch.rotationAngle || 0,
+        force: touch.force || 0
+      };
+    }
+
+    function makeTouchList(touchList) {
+      const touches = Array.prototype.map.call(touchList || [], cloneTouchWithMappedCoordinates);
+      touches.item = function (index) {
+        return touches[index] || null;
+      };
+      return touches;
+    }
+
+    function patchTouchCoordinates(event) {
+      if (!layoutState.isPortrait || !event.touches) {
+        return;
+      }
+
+      const nativeTouches = event.touches;
+      const nativeChangedTouches = event.changedTouches;
+      const nativeTargetTouches = event.targetTouches;
+
+      try {
+        Object.defineProperty(event, "touches", {
+          configurable: true,
+          get: () => makeTouchList(nativeTouches)
+        });
+      } catch (error) { }
+
+      try {
+        Object.defineProperty(event, "changedTouches", {
+          configurable: true,
+          get: () => makeTouchList(nativeChangedTouches)
+        });
+      } catch (error) { }
+
+      try {
+        Object.defineProperty(event, "targetTouches", {
+          configurable: true,
+          get: () => makeTouchList(nativeTargetTouches)
+        });
+      } catch (error) { }
+    }
+
+    function patchUnityInputEvent(event) {
+      if (!layoutState.isPortrait) {
+        return;
+      }
+
+      patchMouseOrPointerCoordinates(event);
+      patchTouchCoordinates(event);
+    }
+
+    [
+      "pointerdown", "pointermove", "pointerup", "pointercancel",
+      "mousedown", "mousemove", "mouseup", "click", "dblclick", "contextmenu",
+      "touchstart", "touchmove", "touchend", "touchcancel"
+    ].forEach((eventName) => {
+      canvas.addEventListener(eventName, patchUnityInputEvent, {
+        capture: true,
+        passive: false
+      });
+    });
 
     applyForcedLandscapeLayout();
 
