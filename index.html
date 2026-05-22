@@ -4,8 +4,6 @@
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-  <meta name="viewport"
-    content="width=device-width, height=device-height, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Unity Web Player | Kickoff Rise Trader</title>
   <link rel="shortcut icon" href="TemplateData/favicon.ico">
   <link rel="stylesheet" href="TemplateData/style.css">
@@ -18,74 +16,59 @@
       padding: 0;
       width: 100%;
       height: 100%;
-      min-height: 100%;
       overflow: hidden;
       background: #000;
-      overscroll-behavior: none;
-      -webkit-text-size-adjust: 100%;
     }
 
-    body {
+    #unity-container {
       position: fixed;
       inset: 0;
-    }
-
-    /*
-      This root is the virtual landscape screen.
-      Portrait phone: root is laid out as landscape, then rotated visually.
-      Landscape phone: root is normal.
-    */
-    #unity-rotate-root {
-      position: fixed;
-      overflow: hidden;
-      background: #000;
-      transform-origin: center center;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      touch-action: manipulation;
-      -webkit-tap-highlight-color: transparent;
-    }
-
-    /* Keep the Unity game frame locked to 16:9. Do not stretch it. */
-    #unity-container {
-      position: relative !important;
-      overflow: hidden;
-      background: #000;
-      flex: 0 0 auto;
-      aspect-ratio: 16 / 9;
-      touch-action: manipulation;
+      width: 100%;
+      height: 100%;
     }
 
     #unity-canvas {
-      position: absolute !important;
-      left: 0 !important;
-      top: 0 !important;
-      width: 100% !important;
-      height: 100% !important;
-      display: block !important;
-      background: #000;
-      image-rendering: auto;
-      touch-action: manipulation;
-      -webkit-tap-highlight-color: transparent;
-    }
-
-    #unity-loading-bar,
-    #unity-warning {
-      position: absolute;
-      z-index: 10;
-    }
-
-    #unity-loading-bar {
-      left: 50%;
-      top: 50%;
-      transform: translate(-50%, -50%);
-    }
-
-    #unity-warning {
-      left: 0;
-      top: 0;
       width: 100%;
+      height: 100%;
+      display: block;
+      background: #000;
+    }
+
+    /* Popup xoay màn hình */
+    #rotate-popup {
+      position: fixed;
+      inset: 0;
+      display: none;
+      justify-content: center;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.9);
+      z-index: 9999;
+      color: white;
+      font-family: Arial, sans-serif;
+      text-align: center;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+
+    #rotate-popup-content {
+      max-width: 320px;
+    }
+
+    #rotate-popup-icon {
+      font-size: 64px;
+      margin-bottom: 20px;
+    }
+
+    #rotate-popup-title {
+      font-size: 28px;
+      font-weight: bold;
+      margin-bottom: 12px;
+    }
+
+    #rotate-popup-text {
+      font-size: 18px;
+      line-height: 1.5;
+      opacity: 0.9;
     }
 
     #fullscreen-btn {
@@ -107,7 +90,6 @@
       backdrop-filter: blur(4px);
       -webkit-backdrop-filter: blur(4px);
       transition: background 0.2s ease, transform 0.2s ease;
-      touch-action: manipulation;
     }
 
     #fullscreen-btn:hover {
@@ -121,28 +103,34 @@
 </head>
 
 <body>
-  <div id="unity-rotate-root">
-    <div id="unity-container">
-      <canvas id="unity-canvas" width="1920" height="1080" tabindex="-1"></canvas>
+  <div id="unity-container">
+    <canvas id="unity-canvas" width="1920" height="1080" tabindex="-1"></canvas>
 
-      <div id="unity-loading-bar">
-        <div id="unity-logo"></div>
-        <div id="unity-progress-bar-empty">
-          <div id="unity-progress-bar-full"></div>
-        </div>
+    <div id="unity-loading-bar">
+      <div id="unity-logo"></div>
+      <div id="unity-progress-bar-empty">
+        <div id="unity-progress-bar-full"></div>
       </div>
+    </div>
 
-      <div id="unity-warning"></div>
+    <div id="unity-warning"></div>
+  </div>
+
+  <!-- Popup xoay màn hình -->
+  <div id="rotate-popup">
+    <div id="rotate-popup-content">
+      <div id="rotate-popup-icon">📱↻</div>
+      <div id="rotate-popup-title">Rotate Device</div>
+      <div id="rotate-popup-text">
+        Please rotate your device to landscape mode to play the game.
+      </div>
     </div>
   </div>
 
   <button id="fullscreen-btn" type="button">⛶</button>
 
   <script>
-    const BUILD_VERSION = "2.0.15";
-    const GAME_WIDTH = 1920;
-    const GAME_HEIGHT = 1080;
-    const GAME_ASPECT = GAME_WIDTH / GAME_HEIGHT;
+    const BUILD_VERSION = "2.0.16";
 
     window.addEventListener("load", function () {
       if ("serviceWorker" in navigator) {
@@ -152,144 +140,12 @@
       }
     });
 
-    const rotateRoot = document.querySelector("#unity-rotate-root");
     const container = document.querySelector("#unity-container");
     const canvas = document.querySelector("#unity-canvas");
     const loadingBar = document.querySelector("#unity-loading-bar");
     const progressBarFull = document.querySelector("#unity-progress-bar-full");
     const warningBanner = document.querySelector("#unity-warning");
-
-    let unityInstanceRef = null;
-    let lastStableViewport = null;
-    let lastOrientationKey = "";
-    let layoutState = {
-      isPortrait: false,
-      viewportWidth: 0,
-      viewportHeight: 0,
-      virtualWidth: 0,
-      virtualHeight: 0,
-      frameWidth: 0,
-      frameHeight: 0,
-      frameLeft: 0,
-      frameTop: 0
-    };
-
-    function getRawViewportSize() {
-      const viewport = window.visualViewport;
-      return {
-        width: Math.round(viewport ? viewport.width : window.innerWidth),
-        height: Math.round(viewport ? viewport.height : window.innerHeight)
-      };
-    }
-
-    function isProbablyKeyboardOpen(rawSize) {
-      if (!lastStableViewport) {
-        return false;
-      }
-
-      const sameOrientation =
-        (rawSize.width > rawSize.height) === (lastStableViewport.width > lastStableViewport.height);
-
-      if (!sameOrientation) {
-        return false;
-      }
-
-      // Mobile browsers usually shrink visualViewport height when the soft keyboard appears.
-      return rawSize.height < lastStableViewport.height * 0.72;
-    }
-
-    function getLayoutViewportSize() {
-      const rawSize = getRawViewportSize();
-      const orientationKey = rawSize.width > rawSize.height ? "landscape" : "portrait";
-
-      if (orientationKey !== lastOrientationKey) {
-        lastOrientationKey = orientationKey;
-        lastStableViewport = rawSize;
-        return rawSize;
-      }
-
-      if (isProbablyKeyboardOpen(rawSize)) {
-        // Keep the old full viewport while keyboard is open.
-        // This prevents the 16:9 canvas from being scaled down or disappearing.
-        return lastStableViewport;
-      }
-
-      // Update stable size only when the viewport is not keyboard-shrunk.
-      // Use the largest dimensions seen in this orientation to resist browser UI bars.
-      if (!lastStableViewport) {
-        lastStableViewport = rawSize;
-      } else {
-        lastStableViewport = {
-          width: Math.max(lastStableViewport.width, rawSize.width),
-          height: Math.max(lastStableViewport.height, rawSize.height)
-        };
-      }
-
-      return lastStableViewport;
-    }
-
-    function applyForcedLandscapeLayout() {
-      const size = getLayoutViewportSize();
-      const isPortrait = size.height > size.width;
-
-      // In portrait, create a landscape coordinate space by swapping width/height.
-      const virtualWidth = isPortrait ? size.height : size.width;
-      const virtualHeight = isPortrait ? size.width : size.height;
-
-      rotateRoot.style.width = virtualWidth + "px";
-      rotateRoot.style.height = virtualHeight + "px";
-
-      if (isPortrait) {
-        rotateRoot.style.left = "50%";
-        rotateRoot.style.top = "50%";
-        rotateRoot.style.transform = "translate(-50%, -50%) rotate(90deg)";
-      } else {
-        rotateRoot.style.left = "0";
-        rotateRoot.style.top = "0";
-        rotateRoot.style.transform = "none";
-      }
-
-      // Contain 16:9 game frame inside the virtual landscape screen.
-      let frameWidth = virtualWidth;
-      let frameHeight = frameWidth / GAME_ASPECT;
-
-      if (frameHeight > virtualHeight) {
-        frameHeight = virtualHeight;
-        frameWidth = frameHeight * GAME_ASPECT;
-      }
-
-      frameWidth = Math.floor(frameWidth);
-      frameHeight = Math.floor(frameHeight);
-
-      layoutState = {
-        isPortrait,
-        viewportWidth: size.width,
-        viewportHeight: size.height,
-        virtualWidth,
-        virtualHeight,
-        frameWidth,
-        frameHeight,
-        frameLeft: Math.floor((virtualWidth - frameWidth) / 2),
-        frameTop: Math.floor((virtualHeight - frameHeight) / 2)
-      };
-
-      container.style.width = frameWidth + "px";
-      container.style.height = frameHeight + "px";
-
-      // Keep Unity render buffer fixed at 1920x1080.
-      // CSS scales visually only; Unity should not stretch UI to phone aspect ratio.
-      if (canvas.width !== GAME_WIDTH) {
-        canvas.width = GAME_WIDTH;
-      }
-
-      if (canvas.height !== GAME_HEIGHT) {
-        canvas.height = GAME_HEIGHT;
-      }
-
-      if (unityInstanceRef && unityInstanceRef.Module && unityInstanceRef.Module.setCanvasSize) {
-        unityInstanceRef.Module.setCanvasSize(GAME_WIDTH, GAME_HEIGHT);
-      }
-    }
+    const rotatePopup = document.querySelector("#rotate-popup");
 
     function unityShowBanner(msg, type) {
       function updateBannerVisibility() {
@@ -330,197 +186,29 @@
       productName: "Kickoff Rise Trader",
       productVersion: BUILD_VERSION,
       showBanner: unityShowBanner,
-
-      // Do not let Unity/WebGL auto-resize render buffer to the rotated CSS frame.
-      matchWebGLToCanvasSize: false,
-      devicePixelRatio: 1
     };
 
-    // Keep native input events trusted, but rewrite their coordinates before Unity reads them.
-    // This fixes portrait clicks after CSS rotation without using an overlay/proxy.
-    const nativeCanvasGetBoundingClientRect = canvas.getBoundingClientRect.bind(canvas);
-
-    function makeRect(left, top, width, height) {
-      if (typeof DOMRect === "function") {
-        return new DOMRect(left, top, width, height);
-      }
-
-      return {
-        left,
-        top,
-        width,
-        height,
-        right: left + width,
-        bottom: top + height,
-        x: left,
-        y: top
-      };
+    if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+      const meta = document.createElement("meta");
+      meta.name = "viewport";
+      meta.content =
+        "width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, shrink-to-fit=yes";
+      document.head.appendChild(meta);
     }
 
-    canvas.getBoundingClientRect = function () {
-      if (!layoutState.isPortrait) {
-        return nativeCanvasGetBoundingClientRect();
-      }
+    function updateOrientationPopup() {
+      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      const isPortrait = window.innerHeight > window.innerWidth;
 
-      return makeRect(
-        layoutState.frameLeft,
-        layoutState.frameTop,
-        layoutState.frameWidth,
-        layoutState.frameHeight
-      );
-    };
-
-    function mapClientPointToVirtualLandscape(clientX, clientY) {
-      if (!layoutState.isPortrait) {
-        return { x: clientX, y: clientY };
-      }
-
-      const centerX = layoutState.viewportWidth / 2;
-      const centerY = layoutState.viewportHeight / 2;
-      const dx = clientX - centerX;
-      const dy = clientY - centerY;
-
-      // Inverse of rotate(90deg) around the center.
-      return {
-        x: layoutState.virtualWidth / 2 + dy,
-        y: layoutState.virtualHeight / 2 - dx
-      };
-    }
-
-    function defineCoordinateGetter(object, propertyName, value) {
-      try {
-        Object.defineProperty(object, propertyName, {
-          configurable: true,
-          get: () => value
-        });
-      } catch (error) {
-        // Some browsers expose read-only, non-configurable event fields.
-        // In that case, leave the native value untouched instead of breaking input.
+      if (isMobile && isPortrait) {
+        rotatePopup.style.display = "flex";
+      } else {
+        rotatePopup.style.display = "none";
       }
     }
 
-    function patchMouseOrPointerCoordinates(event) {
-      if (!layoutState.isPortrait || typeof event.clientX !== "number") {
-        return;
-      }
-
-      const point = mapClientPointToVirtualLandscape(event.clientX, event.clientY);
-      const pageOffsetX = window.pageXOffset || document.documentElement.scrollLeft || 0;
-      const pageOffsetY = window.pageYOffset || document.documentElement.scrollTop || 0;
-
-      defineCoordinateGetter(event, "clientX", point.x);
-      defineCoordinateGetter(event, "clientY", point.y);
-      defineCoordinateGetter(event, "pageX", point.x + pageOffsetX);
-      defineCoordinateGetter(event, "pageY", point.y + pageOffsetY);
-      defineCoordinateGetter(event, "screenX", point.x);
-      defineCoordinateGetter(event, "screenY", point.y);
-      defineCoordinateGetter(event, "offsetX", point.x - layoutState.frameLeft);
-      defineCoordinateGetter(event, "offsetY", point.y - layoutState.frameTop);
-    }
-
-    function cloneTouchWithMappedCoordinates(touch) {
-      const point = mapClientPointToVirtualLandscape(touch.clientX, touch.clientY);
-      const pageOffsetX = window.pageXOffset || document.documentElement.scrollLeft || 0;
-      const pageOffsetY = window.pageYOffset || document.documentElement.scrollTop || 0;
-
-      return {
-        identifier: touch.identifier,
-        target: touch.target,
-        clientX: point.x,
-        clientY: point.y,
-        pageX: point.x + pageOffsetX,
-        pageY: point.y + pageOffsetY,
-        screenX: point.x,
-        screenY: point.y,
-        radiusX: touch.radiusX || 1,
-        radiusY: touch.radiusY || 1,
-        rotationAngle: touch.rotationAngle || 0,
-        force: touch.force || 0
-      };
-    }
-
-    function makeTouchList(touchList) {
-      const touches = Array.prototype.map.call(touchList || [], cloneTouchWithMappedCoordinates);
-      touches.item = function (index) {
-        return touches[index] || null;
-      };
-      return touches;
-    }
-
-    function patchTouchCoordinates(event) {
-      if (!layoutState.isPortrait || !event.touches) {
-        return;
-      }
-
-      const nativeTouches = event.touches;
-      const nativeChangedTouches = event.changedTouches;
-      const nativeTargetTouches = event.targetTouches;
-
-      try {
-        Object.defineProperty(event, "touches", {
-          configurable: true,
-          get: () => makeTouchList(nativeTouches)
-        });
-      } catch (error) { }
-
-      try {
-        Object.defineProperty(event, "changedTouches", {
-          configurable: true,
-          get: () => makeTouchList(nativeChangedTouches)
-        });
-      } catch (error) { }
-
-      try {
-        Object.defineProperty(event, "targetTouches", {
-          configurable: true,
-          get: () => makeTouchList(nativeTargetTouches)
-        });
-      } catch (error) { }
-    }
-
-    function patchUnityInputEvent(event) {
-      if (!layoutState.isPortrait) {
-        return;
-      }
-
-      patchMouseOrPointerCoordinates(event);
-      patchTouchCoordinates(event);
-    }
-
-    [
-      "pointerdown", "pointermove", "pointerup", "pointercancel",
-      "mousedown", "mousemove", "mouseup", "click", "dblclick", "contextmenu",
-      "touchstart", "touchmove", "touchend", "touchcancel"
-    ].forEach((eventName) => {
-      canvas.addEventListener(eventName, patchUnityInputEvent, {
-        capture: true,
-        passive: false
-      });
-    });
-
-    applyForcedLandscapeLayout();
-
-    window.addEventListener("resize", () => {
-      applyForcedLandscapeLayout();
-      setTimeout(applyForcedLandscapeLayout, 100);
-    });
-
-    window.addEventListener("orientationchange", () => {
-      lastStableViewport = null;
-      lastOrientationKey = "";
-      setTimeout(applyForcedLandscapeLayout, 100);
-      setTimeout(applyForcedLandscapeLayout, 350);
-      setTimeout(applyForcedLandscapeLayout, 800);
-    });
-
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener("resize", () => {
-        applyForcedLandscapeLayout();
-      });
-      window.visualViewport.addEventListener("scroll", () => {
-        applyForcedLandscapeLayout();
-      });
-    }
+    window.addEventListener("resize", updateOrientationPopup);
+    window.addEventListener("orientationchange", updateOrientationPopup);
 
     loadingBar.style.display = "block";
 
@@ -532,9 +220,8 @@
         progressBarFull.style.width = (100 * progress) + "%";
       })
         .then((unityInstance) => {
-          unityInstanceRef = unityInstance;
           loadingBar.style.display = "none";
-          applyForcedLandscapeLayout();
+          updateOrientationPopup();
         })
         .catch((message) => {
           alert(message);
@@ -600,8 +287,6 @@
       }
 
       updateFullscreenButton();
-      setTimeout(applyForcedLandscapeLayout, 100);
-      setTimeout(applyForcedLandscapeLayout, 350);
     }
 
     fullscreenBtn.addEventListener("click", toggleFullscreen);
