@@ -92,6 +92,21 @@
       width: 100%;
     }
 
+
+    /* Transparent input proxy used only in portrait forced-landscape mode.
+       It remaps touch/click coordinates from the real portrait screen to the rotated 16:9 Unity canvas. */
+    #unity-input-proxy {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: none;
+      background: transparent;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
     #fullscreen-btn {
       position: fixed;
       right: 16px;
@@ -139,10 +154,12 @@
     </div>
   </div>
 
+  <div id="unity-input-proxy" aria-hidden="true"></div>
+
   <button id="fullscreen-btn" type="button">⛶</button>
 
   <script>
-    const BUILD_VERSION = "2.0.8";
+    const BUILD_VERSION = "2.0.9";
     const GAME_WIDTH = 1920;
     const GAME_HEIGHT = 1080;
     const GAME_ASPECT = GAME_WIDTH / GAME_HEIGHT;
@@ -161,8 +178,20 @@
     const loadingBar = document.querySelector("#unity-loading-bar");
     const progressBarFull = document.querySelector("#unity-progress-bar-full");
     const warningBanner = document.querySelector("#unity-warning");
+    const inputProxy = document.querySelector("#unity-input-proxy");
 
     let unityInstanceRef = null;
+    let layoutState = {
+      isPortrait: false,
+      screenWidth: 0,
+      screenHeight: 0,
+      virtualWidth: 0,
+      virtualHeight: 0,
+      frameWidth: 0,
+      frameHeight: 0,
+      frameLeft: 0,
+      frameTop: 0
+    };
 
     function getScreenSize() {
       const viewport = window.visualViewport;
@@ -207,6 +236,22 @@
 
       container.style.width = frameWidth + "px";
       container.style.height = frameHeight + "px";
+
+      layoutState = {
+        isPortrait,
+        screenWidth: size.width,
+        screenHeight: size.height,
+        virtualWidth,
+        virtualHeight,
+        frameWidth,
+        frameHeight,
+        frameLeft: (virtualWidth - frameWidth) / 2,
+        frameTop: (virtualHeight - frameHeight) / 2
+      };
+
+      // In portrait, the visual layer is rotated with CSS. Unity does not know about that rotation,
+      // so the transparent proxy remaps touch/click coordinates before sending them to the canvas.
+      inputProxy.style.display = isPortrait ? "block" : "none";
 
       // Important: keep Unity render buffer fixed at 1920x1080.
       // Only CSS scales it visually. This prevents aspect-ratio fighting and UI distortion.
@@ -282,6 +327,197 @@
       window.visualViewport.addEventListener("resize", applyForcedLandscapeLayout);
       window.visualViewport.addEventListener("scroll", applyForcedLandscapeLayout);
     }
+
+    function portraitClientToFramePoint(clientX, clientY) {
+      if (!layoutState.isPortrait) {
+        return null;
+      }
+
+      // Inverse of: rotateRoot translate(-50%, -50%) rotate(90deg).
+      // Converts the real portrait screen coordinate into the virtual landscape coordinate system.
+      const rootX = (layoutState.virtualWidth / 2) + (clientY - layoutState.screenHeight / 2);
+      const rootY = (layoutState.virtualHeight / 2) - (clientX - layoutState.screenWidth / 2);
+
+      const frameX = rootX - layoutState.frameLeft;
+      const frameY = rootY - layoutState.frameTop;
+
+      if (
+        frameX < 0 ||
+        frameY < 0 ||
+        frameX > layoutState.frameWidth ||
+        frameY > layoutState.frameHeight
+      ) {
+        return null;
+      }
+
+      return { x: frameX, y: frameY };
+    }
+
+    function framePointToUnityClient(framePoint) {
+      const rect = canvas.getBoundingClientRect();
+
+      // Feed Unity a synthetic coordinate that matches the unrotated 16:9 frame.
+      // This prevents the visual button position and Unity's received pointer position from drifting apart.
+      return {
+        x: rect.left + (framePoint.x / layoutState.frameWidth) * rect.width,
+        y: rect.top + (framePoint.y / layoutState.frameHeight) * rect.height
+      };
+    }
+
+    function dispatchMouseLikeEvent(type, originalEvent, clientPoint) {
+      const event = new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: clientPoint.x,
+        clientY: clientPoint.y,
+        screenX: clientPoint.x,
+        screenY: clientPoint.y,
+        button: originalEvent.button || 0,
+        buttons: originalEvent.buttons || (type === "mouseup" || type === "click" ? 0 : 1),
+        ctrlKey: originalEvent.ctrlKey || false,
+        shiftKey: originalEvent.shiftKey || false,
+        altKey: originalEvent.altKey || false,
+        metaKey: originalEvent.metaKey || false
+      });
+
+      canvas.dispatchEvent(event);
+    }
+
+    function dispatchPointerLikeEvent(type, originalEvent, clientPoint) {
+      if (!window.PointerEvent) {
+        return;
+      }
+
+      const event = new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        pointerId: originalEvent.pointerId || 1,
+        pointerType: originalEvent.pointerType || "touch",
+        isPrimary: originalEvent.isPrimary !== false,
+        clientX: clientPoint.x,
+        clientY: clientPoint.y,
+        screenX: clientPoint.x,
+        screenY: clientPoint.y,
+        button: originalEvent.button || 0,
+        buttons: originalEvent.buttons || (type === "pointerup" || type === "pointercancel" ? 0 : 1),
+        pressure: type === "pointerup" || type === "pointercancel" ? 0 : (originalEvent.pressure || 0.5),
+        width: originalEvent.width || 1,
+        height: originalEvent.height || 1,
+        ctrlKey: originalEvent.ctrlKey || false,
+        shiftKey: originalEvent.shiftKey || false,
+        altKey: originalEvent.altKey || false,
+        metaKey: originalEvent.metaKey || false
+      });
+
+      canvas.dispatchEvent(event);
+    }
+
+    const activePointers = new Map();
+
+    function handleProxyPointerEvent(event) {
+      if (!layoutState.isPortrait) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const framePoint = portraitClientToFramePoint(event.clientX, event.clientY);
+
+      if (!framePoint && event.type !== "pointerup" && event.type !== "pointercancel") {
+        return;
+      }
+
+      const pointToUse = framePoint || activePointers.get(event.pointerId);
+      if (!pointToUse) {
+        return;
+      }
+
+      const unityClientPoint = framePointToUnityClient(pointToUse);
+
+      if (event.type === "pointerdown") {
+        activePointers.set(event.pointerId, pointToUse);
+        dispatchPointerLikeEvent("pointerdown", event, unityClientPoint);
+        dispatchMouseLikeEvent("mousedown", event, unityClientPoint);
+        return;
+      }
+
+      if (event.type === "pointermove") {
+        activePointers.set(event.pointerId, pointToUse);
+        dispatchPointerLikeEvent("pointermove", event, unityClientPoint);
+        dispatchMouseLikeEvent("mousemove", event, unityClientPoint);
+        return;
+      }
+
+      if (event.type === "pointerup") {
+        dispatchPointerLikeEvent("pointerup", event, unityClientPoint);
+        dispatchMouseLikeEvent("mouseup", event, unityClientPoint);
+        dispatchMouseLikeEvent("click", event, unityClientPoint);
+        activePointers.delete(event.pointerId);
+        return;
+      }
+
+      if (event.type === "pointercancel") {
+        dispatchPointerLikeEvent("pointercancel", event, unityClientPoint);
+        dispatchMouseLikeEvent("mouseup", event, unityClientPoint);
+        activePointers.delete(event.pointerId);
+      }
+    }
+
+    ["pointerdown", "pointermove", "pointerup", "pointercancel"].forEach((eventName) => {
+      inputProxy.addEventListener(eventName, handleProxyPointerEvent, { passive: false });
+    });
+
+    // Fallback for old mobile browsers that do not support PointerEvent.
+    function handleProxyTouchEvent(event) {
+      if (window.PointerEvent || !layoutState.isPortrait) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const changedTouch = event.changedTouches && event.changedTouches[0];
+      if (!changedTouch) {
+        return;
+      }
+
+      const framePoint = portraitClientToFramePoint(changedTouch.clientX, changedTouch.clientY);
+      const pointToUse = framePoint || activePointers.get(changedTouch.identifier);
+      if (!pointToUse) {
+        return;
+      }
+
+      const fakeOriginal = {
+        button: 0,
+        buttons: event.type === "touchend" || event.type === "touchcancel" ? 0 : 1,
+        ctrlKey: event.ctrlKey || false,
+        shiftKey: event.shiftKey || false,
+        altKey: event.altKey || false,
+        metaKey: event.metaKey || false
+      };
+
+      const unityClientPoint = framePointToUnityClient(pointToUse);
+
+      if (event.type === "touchstart") {
+        activePointers.set(changedTouch.identifier, pointToUse);
+        dispatchMouseLikeEvent("mousedown", fakeOriginal, unityClientPoint);
+      } else if (event.type === "touchmove") {
+        activePointers.set(changedTouch.identifier, pointToUse);
+        dispatchMouseLikeEvent("mousemove", fakeOriginal, unityClientPoint);
+      } else {
+        dispatchMouseLikeEvent("mouseup", fakeOriginal, unityClientPoint);
+        dispatchMouseLikeEvent("click", fakeOriginal, unityClientPoint);
+        activePointers.delete(changedTouch.identifier);
+      }
+    }
+
+    ["touchstart", "touchmove", "touchend", "touchcancel"].forEach((eventName) => {
+      inputProxy.addEventListener(eventName, handleProxyTouchEvent, { passive: false });
+    });
+
 
     loadingBar.style.display = "block";
 
