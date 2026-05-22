@@ -1,4 +1,4 @@
-const CACHE_NAME = "DefaultCompany-Kickoff Rise Trader-2.0.5";
+const CACHE_NAME = "DefaultCompany-Kickoff Rise Trader-2.0.6";
 
 const contentToCache = [
   "Build/KickoffRiseTrader.WebGL.loader.js",

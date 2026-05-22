@@ -4,19 +4,12 @@
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-  <meta name="viewport"
-    content="width=device-width, height=device-height, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Unity Web Player | Kickoff Rise Trader</title>
   <link rel="shortcut icon" href="TemplateData/favicon.ico">
   <link rel="stylesheet" href="TemplateData/style.css">
   <link rel="manifest" href="manifest.webmanifest">
 
   <style>
-    :root {
-      --viewport-width: 100vw;
-      --viewport-height: 100vh;
-    }
-
     html,
     body {
       margin: 0;
@@ -25,8 +18,8 @@
       height: 100%;
       overflow: hidden;
       background: #000;
-      overscroll-behavior: none;
       touch-action: none;
+      overscroll-behavior: none;
     }
 
     body {
@@ -34,19 +27,14 @@
       inset: 0;
     }
 
-    /*
-      Default / landscape:
-      Let Unity fill the real screen normally.
-    */
     #unity-container {
       position: fixed;
       left: 0;
       top: 0;
-      width: var(--viewport-width);
-      height: var(--viewport-height);
+      width: 100vw;
+      height: 100vh;
       overflow: hidden;
       background: #000;
-      transform: none;
     }
 
     #unity-canvas {
@@ -58,27 +46,35 @@
 
     /*
       Portrait mode:
-      Do NOT show a rotate popup.
-      Do NOT rotate the canvas with CSS because that can break Unity touch/click coordinates.
-
-      Instead, keep the game rendered as a landscape 16:9 canvas and make it cover
-      the portrait screen. This means the game stays full-screen and landscape,
-      while the left/right sides may be cropped on narrow portrait screens.
+      The phone is physically vertical, but the Unity viewport is forced to a
+      landscape rectangle by swapping viewport width/height, then rotating it.
+      Result: the player sees the same landscape game view without any popup.
     */
-    @media screen and (orientation: portrait) {
+    @media (orientation: portrait) {
       #unity-container {
+        width: 100vh;
+        height: 100vw;
         left: 50%;
         top: 50%;
-        width: calc(var(--viewport-height) * 16 / 9);
-        height: var(--viewport-height);
-        transform: translate(-50%, -50%);
+        transform: translate(-50%, -50%) rotate(90deg);
+        transform-origin: center center;
+      }
+    }
+
+    @media (orientation: landscape) {
+      #unity-container {
+        width: 100vw;
+        height: 100vh;
+        left: 0;
+        top: 0;
+        transform: none;
       }
     }
 
     #fullscreen-btn {
       position: fixed;
-      right: max(16px, env(safe-area-inset-right));
-      bottom: max(16px, env(safe-area-inset-bottom));
+      right: 16px;
+      bottom: 16px;
       width: 52px;
       height: 52px;
       border: none;
@@ -119,11 +115,12 @@
 
     <div id="unity-warning"></div>
   </div>
+  </div>
 
-  <button id="fullscreen-btn" type="button" aria-label="Toggle fullscreen">⛶</button>
+  <button id="fullscreen-btn" type="button">⛶</button>
 
   <script>
-    const BUILD_VERSION = "2.0.5";
+    const BUILD_VERSION = "2.0.6";
 
     window.addEventListener("load", function () {
       if ("serviceWorker" in navigator) {
@@ -138,27 +135,6 @@
     const loadingBar = document.querySelector("#unity-loading-bar");
     const progressBarFull = document.querySelector("#unity-progress-bar-full");
     const warningBanner = document.querySelector("#unity-warning");
-
-    function updateViewportSize() {
-      const viewport = window.visualViewport;
-      const width = viewport ? viewport.width : window.innerWidth;
-      const height = viewport ? viewport.height : window.innerHeight;
-
-      document.documentElement.style.setProperty("--viewport-width", width + "px");
-      document.documentElement.style.setProperty("--viewport-height", height + "px");
-    }
-
-    updateViewportSize();
-    window.addEventListener("resize", updateViewportSize);
-    window.addEventListener("orientationchange", function () {
-      setTimeout(updateViewportSize, 100);
-      setTimeout(updateViewportSize, 500);
-    });
-
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener("resize", updateViewportSize);
-      window.visualViewport.addEventListener("scroll", updateViewportSize);
-    }
 
     function unityShowBanner(msg, type) {
       function updateBannerVisibility() {
@@ -201,6 +177,12 @@
       showBanner: unityShowBanner,
     };
 
+    const viewportMeta = document.createElement("meta");
+    viewportMeta.name = "viewport";
+    viewportMeta.content =
+      "width=device-width, height=device-height, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover";
+    document.head.appendChild(viewportMeta);
+
     loadingBar.style.display = "block";
 
     const script = document.createElement("script");
@@ -212,7 +194,11 @@
       })
         .then((unityInstance) => {
           loadingBar.style.display = "none";
-          updateViewportSize();
+
+          // Let Unity recalculate its WebGL viewport after CSS orientation handling.
+          setTimeout(() => {
+            window.dispatchEvent(new Event("resize"));
+          }, 100);
         })
         .catch((message) => {
           alert(message);
@@ -278,7 +264,6 @@
       }
 
       updateFullscreenButton();
-      setTimeout(updateViewportSize, 100);
     }
 
     fullscreenBtn.addEventListener("click", toggleFullscreen);
