@@ -186,7 +186,7 @@
   <button id="fullscreen-btn" type="button">⛶</button>
 
   <script>
-    const BUILD_VERSION = "2.0.10";
+    const BUILD_VERSION = "2.0.11";
     const GAME_WIDTH = 1920;
     const GAME_HEIGHT = 1080;
     const GAME_ASPECT = GAME_WIDTH / GAME_HEIGHT;
@@ -221,12 +221,27 @@
       frameTop: 0
     };
 
-    function getScreenSize() {
-      const viewport = window.visualViewport;
+    let keyboardModeActive = false;
+    let frozenScreenSize = null;
+
+    function readLayoutViewportSize() {
+      const doc = document.documentElement;
       return {
-        width: viewport ? viewport.width : window.innerWidth,
-        height: viewport ? viewport.height : window.innerHeight
+        width: window.innerWidth || doc.clientWidth || screen.width,
+        height: window.innerHeight || doc.clientHeight || screen.height
       };
+    }
+
+    function getScreenSize() {
+      // Important:
+      // Do NOT use visualViewport as the main game size while the keyboard is open.
+      // On mobile, visualViewport becomes smaller when the soft keyboard appears.
+      // If we use that smaller size, the whole Unity canvas shrinks.
+      if (keyboardModeActive && frozenScreenSize) {
+        return frozenScreenSize;
+      }
+
+      return readLayoutViewportSize();
     }
 
     function applyForcedLandscapeLayout() {
@@ -557,6 +572,14 @@
         return;
       }
 
+      // Freeze the game viewport before opening the soft keyboard.
+      // Otherwise Android/iOS will fire resize/visualViewport events and the canvas will shrink.
+      keyboardModeActive = true;
+      frozenScreenSize = {
+        width: layoutState.screenWidth || readLayoutViewportSize().width,
+        height: layoutState.screenHeight || readLayoutViewportSize().height
+      };
+
       // Focus must happen as a direct consequence of the user's real tap.
       // A tiny timeout lets Unity receive the remapped click first and select its InputField.
       setTimeout(() => {
@@ -569,6 +592,8 @@
             keyboardProxy.focus();
           } catch (_) { }
         }
+
+        applyForcedLandscapeLayout();
       }, 30);
     }
 
@@ -581,6 +606,10 @@
         keyboardProxy.blur();
         keyboardProxy.value = "";
       } catch (_) { }
+
+      keyboardModeActive = false;
+      frozenScreenSize = null;
+      setTimeout(applyForcedLandscapeLayout, 50);
     }
 
     function dispatchUnityKeyboardEvent(type, key, code, options) {
@@ -673,6 +702,11 @@
       if (keyboardProxy) {
         keyboardProxy.value = "";
       }
+
+      keyboardModeActive = false;
+      frozenScreenSize = null;
+      setTimeout(applyForcedLandscapeLayout, 50);
+      setTimeout(applyForcedLandscapeLayout, 250);
     });
 
 
