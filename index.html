@@ -107,6 +107,31 @@
       -webkit-tap-highlight-color: transparent;
     }
 
+    /*
+      Real HTML input used only to summon the mobile keyboard in forced portrait mode.
+      Canvas/Unity cannot open the soft keyboard from synthetic click events, so this
+      element receives focus from the real user tap and forwards typed keys to Unity.
+    */
+    #unity-keyboard-proxy {
+      position: fixed;
+      left: 0;
+      bottom: 0;
+      width: 1px;
+      height: 1px;
+      opacity: 0.01;
+      z-index: 9998;
+      border: 0;
+      outline: 0;
+      padding: 0;
+      margin: 0;
+      resize: none;
+      background: transparent;
+      color: transparent;
+      caret-color: transparent;
+      pointer-events: none;
+      transform: translateY(100px);
+    }
+
     #fullscreen-btn {
       position: fixed;
       right: 16px;
@@ -155,11 +180,13 @@
   </div>
 
   <div id="unity-input-proxy" aria-hidden="true"></div>
+  <textarea id="unity-keyboard-proxy" aria-hidden="true" autocomplete="off" autocorrect="off" autocapitalize="off"
+    spellcheck="false" inputmode="text"></textarea>
 
   <button id="fullscreen-btn" type="button">⛶</button>
 
   <script>
-    const BUILD_VERSION = "2.0.9";
+    const BUILD_VERSION = "2.0.10";
     const GAME_WIDTH = 1920;
     const GAME_HEIGHT = 1080;
     const GAME_ASPECT = GAME_WIDTH / GAME_HEIGHT;
@@ -179,6 +206,7 @@
     const progressBarFull = document.querySelector("#unity-progress-bar-full");
     const warningBanner = document.querySelector("#unity-warning");
     const inputProxy = document.querySelector("#unity-input-proxy");
+    const keyboardProxy = document.querySelector("#unity-keyboard-proxy");
 
     let unityInstanceRef = null;
     let layoutState = {
@@ -252,6 +280,9 @@
       // In portrait, the visual layer is rotated with CSS. Unity does not know about that rotation,
       // so the transparent proxy remaps touch/click coordinates before sending them to the canvas.
       inputProxy.style.display = isPortrait ? "block" : "none";
+      if (!isPortrait) {
+        blurKeyboardProxy();
+      }
 
       // Important: keep Unity render buffer fixed at 1920x1080.
       // Only CSS scales it visually. This prevents aspect-ratio fighting and UI distortion.
@@ -455,6 +486,7 @@
         dispatchPointerLikeEvent("pointerup", event, unityClientPoint);
         dispatchMouseLikeEvent("mouseup", event, unityClientPoint);
         dispatchMouseLikeEvent("click", event, unityClientPoint);
+        focusKeyboardProxySoon();
         activePointers.delete(event.pointerId);
         return;
       }
@@ -510,12 +542,137 @@
       } else {
         dispatchMouseLikeEvent("mouseup", fakeOriginal, unityClientPoint);
         dispatchMouseLikeEvent("click", fakeOriginal, unityClientPoint);
+        focusKeyboardProxySoon();
         activePointers.delete(changedTouch.identifier);
       }
     }
 
     ["touchstart", "touchmove", "touchend", "touchcancel"].forEach((eventName) => {
       inputProxy.addEventListener(eventName, handleProxyTouchEvent, { passive: false });
+    });
+
+
+    function focusKeyboardProxySoon() {
+      if (!layoutState.isPortrait || !keyboardProxy) {
+        return;
+      }
+
+      // Focus must happen as a direct consequence of the user's real tap.
+      // A tiny timeout lets Unity receive the remapped click first and select its InputField.
+      setTimeout(() => {
+        try {
+          keyboardProxy.value = "";
+          keyboardProxy.focus({ preventScroll: true });
+          keyboardProxy.setSelectionRange(0, 0);
+        } catch (error) {
+          try {
+            keyboardProxy.focus();
+          } catch (_) { }
+        }
+      }, 30);
+    }
+
+    function blurKeyboardProxy() {
+      if (!keyboardProxy) {
+        return;
+      }
+
+      try {
+        keyboardProxy.blur();
+        keyboardProxy.value = "";
+      } catch (_) { }
+    }
+
+    function dispatchUnityKeyboardEvent(type, key, code, options) {
+      const opts = options || {};
+      const eventInit = {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        key: key,
+        code: code || "",
+        keyCode: opts.keyCode || (key && key.length === 1 ? key.charCodeAt(0) : 0),
+        which: opts.which || (key && key.length === 1 ? key.charCodeAt(0) : 0),
+        charCode: opts.charCode || (type === "keypress" && key && key.length === 1 ? key.charCodeAt(0) : 0),
+        ctrlKey: false,
+        shiftKey: !!opts.shiftKey,
+        altKey: false,
+        metaKey: false
+      };
+
+      let event;
+      try {
+        event = new KeyboardEvent(type, eventInit);
+      } catch (_) {
+        event = document.createEvent("KeyboardEvent");
+        event.initKeyboardEvent(type, true, true, window, key, 0, "", false, "");
+      }
+
+      canvas.dispatchEvent(event);
+      window.dispatchEvent(event);
+      document.dispatchEvent(event);
+    }
+
+    function sendTextToUnity(text) {
+      for (const ch of text) {
+        const keyCode = ch.charCodeAt(0);
+        dispatchUnityKeyboardEvent("keydown", ch, "", { keyCode, which: keyCode, charCode: 0 });
+        dispatchUnityKeyboardEvent("keypress", ch, "", { keyCode, which: keyCode, charCode: keyCode });
+        dispatchUnityKeyboardEvent("keyup", ch, "", { keyCode, which: keyCode, charCode: 0 });
+      }
+    }
+
+    function sendSpecialKeyToUnity(key, keyCode, code) {
+      dispatchUnityKeyboardEvent("keydown", key, code, { keyCode, which: keyCode });
+      dispatchUnityKeyboardEvent("keyup", key, code, { keyCode, which: keyCode });
+    }
+
+    keyboardProxy.addEventListener("keydown", (event) => {
+      if (!layoutState.isPortrait) {
+        return;
+      }
+
+      event.stopPropagation();
+
+      if (event.key === "Backspace") {
+        event.preventDefault();
+        sendSpecialKeyToUnity("Backspace", 8, "Backspace");
+        keyboardProxy.value = "";
+        return;
+      }
+
+      if (event.key === "Enter") {
+        event.preventDefault();
+        sendSpecialKeyToUnity("Enter", 13, "Enter");
+        keyboardProxy.value = "";
+        blurKeyboardProxy();
+        return;
+      }
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        sendSpecialKeyToUnity("Escape", 27, "Escape");
+        blurKeyboardProxy();
+      }
+    }, { passive: false });
+
+    keyboardProxy.addEventListener("input", (event) => {
+      if (!layoutState.isPortrait) {
+        return;
+      }
+
+      event.stopPropagation();
+      const text = keyboardProxy.value || "";
+      if (text.length > 0) {
+        sendTextToUnity(text);
+      }
+      keyboardProxy.value = "";
+    }, { passive: false });
+
+    keyboardProxy.addEventListener("blur", () => {
+      if (keyboardProxy) {
+        keyboardProxy.value = "";
+      }
     });
 
 
