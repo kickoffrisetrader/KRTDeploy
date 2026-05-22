@@ -132,6 +132,36 @@
       transform: translateY(100px);
     }
 
+    #keyboard-btn {
+      position: fixed;
+      left: 16px;
+      bottom: 16px;
+      width: 52px;
+      height: 52px;
+      border: none;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.65);
+      color: #fff;
+      font-size: 24px;
+      cursor: pointer;
+      z-index: 10000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      transition: background 0.2s ease, transform 0.2s ease;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    #keyboard-btn:hover {
+      background: rgba(0, 0, 0, 0.85);
+    }
+
+    #keyboard-btn:active {
+      transform: scale(0.95);
+    }
+
     #fullscreen-btn {
       position: fixed;
       right: 16px;
@@ -183,10 +213,11 @@
   <textarea id="unity-keyboard-proxy" aria-hidden="true" autocomplete="off" autocorrect="off" autocapitalize="off"
     spellcheck="false" inputmode="text"></textarea>
 
+  <button id="keyboard-btn" type="button" aria-label="Open keyboard">⌨</button>
   <button id="fullscreen-btn" type="button">⛶</button>
 
   <script>
-    const BUILD_VERSION = "2.0.11";
+    const BUILD_VERSION = "2.0.12";
     const GAME_WIDTH = 1920;
     const GAME_HEIGHT = 1080;
     const GAME_ASPECT = GAME_WIDTH / GAME_HEIGHT;
@@ -207,6 +238,7 @@
     const warningBanner = document.querySelector("#unity-warning");
     const inputProxy = document.querySelector("#unity-input-proxy");
     const keyboardProxy = document.querySelector("#unity-keyboard-proxy");
+    const keyboardBtn = document.querySelector("#keyboard-btn");
 
     let unityInstanceRef = null;
     let layoutState = {
@@ -223,6 +255,8 @@
 
     let keyboardModeActive = false;
     let frozenScreenSize = null;
+    let gameIsLoaded = false;
+    const KEYBOARD_SENTINEL = "\u200B";
 
     function readLayoutViewportSize() {
       const doc = document.documentElement;
@@ -295,6 +329,9 @@
       // In portrait, the visual layer is rotated with CSS. Unity does not know about that rotation,
       // so the transparent proxy remaps touch/click coordinates before sending them to the canvas.
       inputProxy.style.display = isPortrait ? "block" : "none";
+      if (keyboardBtn) {
+        keyboardBtn.style.display = isPortrait && gameIsLoaded ? "flex" : "none";
+      }
       if (!isPortrait) {
         blurKeyboardProxy();
       }
@@ -501,7 +538,6 @@
         dispatchPointerLikeEvent("pointerup", event, unityClientPoint);
         dispatchMouseLikeEvent("mouseup", event, unityClientPoint);
         dispatchMouseLikeEvent("click", event, unityClientPoint);
-        focusKeyboardProxySoon();
         activePointers.delete(event.pointerId);
         return;
       }
@@ -557,7 +593,6 @@
       } else {
         dispatchMouseLikeEvent("mouseup", fakeOriginal, unityClientPoint);
         dispatchMouseLikeEvent("click", fakeOriginal, unityClientPoint);
-        focusKeyboardProxySoon();
         activePointers.delete(changedTouch.identifier);
       }
     }
@@ -567,35 +602,48 @@
     });
 
 
-    function focusKeyboardProxySoon() {
-      if (!layoutState.isPortrait || !keyboardProxy) {
+    function resetKeyboardProxyValue() {
+      if (!keyboardProxy) {
+        return;
+      }
+
+      keyboardProxy.value = KEYBOARD_SENTINEL;
+      try {
+        keyboardProxy.setSelectionRange(KEYBOARD_SENTINEL.length, KEYBOARD_SENTINEL.length);
+      } catch (_) { }
+    }
+
+    function focusKeyboardProxyNow() {
+      if (!layoutState.isPortrait || !keyboardProxy || !gameIsLoaded) {
         return;
       }
 
       // Freeze the game viewport before opening the soft keyboard.
-      // Otherwise Android/iOS will fire resize/visualViewport events and the canvas will shrink.
+      // Otherwise Android/iOS will fire resize/visualViewport events and the canvas can shrink.
       keyboardModeActive = true;
       frozenScreenSize = {
         width: layoutState.screenWidth || readLayoutViewportSize().width,
         height: layoutState.screenHeight || readLayoutViewportSize().height
       };
 
-      // Focus must happen as a direct consequence of the user's real tap.
-      // A tiny timeout lets Unity receive the remapped click first and select its InputField.
-      setTimeout(() => {
+      try {
+        resetKeyboardProxyValue();
+        keyboardProxy.focus({ preventScroll: true });
+        resetKeyboardProxyValue();
+      } catch (error) {
         try {
-          keyboardProxy.value = "";
-          keyboardProxy.focus({ preventScroll: true });
-          keyboardProxy.setSelectionRange(0, 0);
-        } catch (error) {
-          try {
-            keyboardProxy.focus();
-          } catch (_) { }
-        }
+          keyboardProxy.focus();
+          resetKeyboardProxyValue();
+        } catch (_) { }
+      }
 
-        applyForcedLandscapeLayout();
-      }, 30);
+      applyForcedLandscapeLayout();
     }
+
+    // Optional hook for Unity-side bridge.
+    // If you can call this from InputField.onSelect in Unity, keyboard opens only for real text fields.
+    window.UnityWebGLShowKeyboard = focusKeyboardProxyNow;
+    window.UnityWebGLHideKeyboard = blurKeyboardProxy;
 
     function blurKeyboardProxy() {
       if (!keyboardProxy) {
@@ -643,6 +691,10 @@
     }
 
     function sendTextToUnity(text) {
+      if (!text) {
+        return;
+      }
+
       for (const ch of text) {
         const keyCode = ch.charCodeAt(0);
         dispatchUnityKeyboardEvent("keydown", ch, "", { keyCode, which: keyCode, charCode: 0 });
@@ -656,6 +708,42 @@
       dispatchUnityKeyboardEvent("keyup", key, code, { keyCode, which: keyCode });
     }
 
+    function handleKeyboardTextInsert(text) {
+      sendTextToUnity(text || "");
+      resetKeyboardProxyValue();
+    }
+
+    function handleKeyboardDelete() {
+      sendSpecialKeyToUnity("Backspace", 8, "Backspace");
+      resetKeyboardProxyValue();
+    }
+
+    keyboardProxy.addEventListener("beforeinput", (event) => {
+      if (!layoutState.isPortrait) {
+        return;
+      }
+
+      event.stopPropagation();
+
+      if (event.inputType === "deleteContentBackward" || event.inputType === "deleteContentForward") {
+        event.preventDefault();
+        handleKeyboardDelete();
+        return;
+      }
+
+      if (event.inputType === "insertLineBreak") {
+        event.preventDefault();
+        sendSpecialKeyToUnity("Enter", 13, "Enter");
+        blurKeyboardProxy();
+        return;
+      }
+
+      if (event.inputType === "insertText" && typeof event.data === "string") {
+        event.preventDefault();
+        handleKeyboardTextInsert(event.data);
+      }
+    }, { passive: false });
+
     keyboardProxy.addEventListener("keydown", (event) => {
       if (!layoutState.isPortrait) {
         return;
@@ -665,15 +753,20 @@
 
       if (event.key === "Backspace") {
         event.preventDefault();
-        sendSpecialKeyToUnity("Backspace", 8, "Backspace");
-        keyboardProxy.value = "";
+        handleKeyboardDelete();
+        return;
+      }
+
+      if (event.key === "Delete") {
+        event.preventDefault();
+        sendSpecialKeyToUnity("Delete", 46, "Delete");
+        resetKeyboardProxyValue();
         return;
       }
 
       if (event.key === "Enter") {
         event.preventDefault();
         sendSpecialKeyToUnity("Enter", 13, "Enter");
-        keyboardProxy.value = "";
         blurKeyboardProxy();
         return;
       }
@@ -691,11 +784,22 @@
       }
 
       event.stopPropagation();
-      const text = keyboardProxy.value || "";
+
+      const value = keyboardProxy.value || "";
+
+      // Some Android/iOS keyboards do not provide reliable keydown/beforeinput for delete.
+      // The sentinel lets us detect deletion even when normal Backspace events are missing.
+      if (value.indexOf(KEYBOARD_SENTINEL) === -1 || value.length < KEYBOARD_SENTINEL.length) {
+        handleKeyboardDelete();
+        return;
+      }
+
+      const text = value.replaceAll(KEYBOARD_SENTINEL, "");
       if (text.length > 0) {
         sendTextToUnity(text);
       }
-      keyboardProxy.value = "";
+
+      resetKeyboardProxyValue();
     }, { passive: false });
 
     keyboardProxy.addEventListener("blur", () => {
@@ -709,6 +813,18 @@
       setTimeout(applyForcedLandscapeLayout, 250);
     });
 
+    if (keyboardBtn) {
+      keyboardBtn.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }, { passive: false });
+
+      keyboardBtn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        focusKeyboardProxyNow();
+      }, { passive: false });
+    }
 
     loadingBar.style.display = "block";
 
@@ -721,6 +837,7 @@
       })
         .then((unityInstance) => {
           unityInstanceRef = unityInstance;
+          gameIsLoaded = true;
           loadingBar.style.display = "none";
           applyForcedLandscapeLayout();
         })
