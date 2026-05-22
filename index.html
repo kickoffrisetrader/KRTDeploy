@@ -18,10 +18,12 @@
       padding: 0;
       width: 100%;
       height: 100%;
+      min-height: 100%;
       overflow: hidden;
       background: #000;
       touch-action: none;
       overscroll-behavior: none;
+      -webkit-text-size-adjust: 100%;
     }
 
     body {
@@ -30,11 +32,11 @@
     }
 
     /*
-      This outer layer is the virtual screen.
-      - Landscape device: same size as the browser viewport.
-      - Portrait device: width/height are swapped, then this layer is rotated.
+      Outer virtual landscape screen.
+      In portrait mode this layer is rotated, but the game frame inside it
+      always stays 16:9, so Unity UI is not stretched.
     */
-    #unity-viewport {
+    #unity-rotate-root {
       position: fixed;
       left: 0;
       top: 0;
@@ -42,35 +44,34 @@
       height: 100vh;
       overflow: hidden;
       background: #000;
+      transform-origin: center center;
       display: flex;
       align-items: center;
       justify-content: center;
-      transform-origin: center center;
     }
 
-    /*
-      This is the real Unity game frame.
-      JS calculates its size so it always stays exactly 16:9.
-      This prevents UI stretching/squashing on tall mobile screens.
-    */
+    /* Fixed-aspect Unity frame. JS calculates exact px values. */
     #unity-container {
       position: relative !important;
+      overflow: hidden;
+      background: #000;
+      flex: 0 0 auto;
       width: 100vw;
       height: 56.25vw;
       max-width: 100%;
       max-height: 100%;
-      overflow: hidden;
-      background: #000;
-      flex: 0 0 auto;
+      aspect-ratio: 16 / 9;
     }
 
     #unity-canvas {
-      position: absolute;
-      inset: 0;
+      position: absolute !important;
+      left: 0 !important;
+      top: 0 !important;
       width: 100% !important;
       height: 100% !important;
-      display: block;
+      display: block !important;
       background: #000;
+      image-rendering: auto;
     }
 
     #unity-loading-bar,
@@ -79,24 +80,16 @@
       z-index: 10;
     }
 
-    @media (orientation: portrait) {
-      #unity-viewport {
-        left: 50%;
-        top: 50%;
-        width: 100vh;
-        height: 100vw;
-        transform: translate(-50%, -50%) rotate(90deg);
-      }
+    #unity-loading-bar {
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
     }
 
-    @media (orientation: landscape) {
-      #unity-viewport {
-        left: 0;
-        top: 0;
-        width: 100vw;
-        height: 100vh;
-        transform: none;
-      }
+    #unity-warning {
+      left: 0;
+      top: 0;
+      width: 100%;
     }
 
     #fullscreen-btn {
@@ -131,7 +124,7 @@
 </head>
 
 <body>
-  <div id="unity-viewport">
+  <div id="unity-rotate-root">
     <div id="unity-container">
       <canvas id="unity-canvas" width="1920" height="1080" tabindex="-1"></canvas>
 
@@ -149,8 +142,10 @@
   <button id="fullscreen-btn" type="button">⛶</button>
 
   <script>
-    const BUILD_VERSION = "2.0.7";
-    const TARGET_ASPECT = 16 / 9;
+    const BUILD_VERSION = "2.0.8";
+    const GAME_WIDTH = 1920;
+    const GAME_HEIGHT = 1080;
+    const GAME_ASPECT = GAME_WIDTH / GAME_HEIGHT;
 
     window.addEventListener("load", function () {
       if ("serviceWorker" in navigator) {
@@ -160,67 +155,72 @@
       }
     });
 
-    const viewport = document.querySelector("#unity-viewport");
+    const rotateRoot = document.querySelector("#unity-rotate-root");
     const container = document.querySelector("#unity-container");
     const canvas = document.querySelector("#unity-canvas");
     const loadingBar = document.querySelector("#unity-loading-bar");
     const progressBarFull = document.querySelector("#unity-progress-bar-full");
     const warningBanner = document.querySelector("#unity-warning");
 
-    function getViewportSize() {
-      const visualViewport = window.visualViewport;
+    let unityInstanceRef = null;
 
+    function getScreenSize() {
+      const viewport = window.visualViewport;
       return {
-        width: visualViewport ? visualViewport.width : window.innerWidth,
-        height: visualViewport ? visualViewport.height : window.innerHeight
+        width: viewport ? viewport.width : window.innerWidth,
+        height: viewport ? viewport.height : window.innerHeight
       };
     }
 
-    function resizeUnityFrame() {
-      const size = getViewportSize();
+    function applyForcedLandscapeLayout() {
+      const size = getScreenSize();
       const isPortrait = size.height > size.width;
 
-      // In portrait, we rotate the whole virtual screen, so swap width/height.
-      const availableWidth = isPortrait ? size.height : size.width;
-      const availableHeight = isPortrait ? size.width : size.height;
+      // The virtual landscape screen. In portrait, swap width/height and rotate it.
+      const virtualWidth = isPortrait ? size.height : size.width;
+      const virtualHeight = isPortrait ? size.width : size.height;
 
-      let gameWidth = availableWidth;
-      let gameHeight = gameWidth / TARGET_ASPECT;
-
-      if (gameHeight > availableHeight) {
-        gameHeight = availableHeight;
-        gameWidth = gameHeight * TARGET_ASPECT;
-      }
-
-      viewport.style.width = availableWidth + "px";
-      viewport.style.height = availableHeight + "px";
+      rotateRoot.style.width = virtualWidth + "px";
+      rotateRoot.style.height = virtualHeight + "px";
 
       if (isPortrait) {
-        viewport.style.left = "50%";
-        viewport.style.top = "50%";
-        viewport.style.transform = "translate(-50%, -50%) rotate(90deg)";
+        rotateRoot.style.left = "50%";
+        rotateRoot.style.top = "50%";
+        rotateRoot.style.transform = "translate(-50%, -50%) rotate(90deg)";
       } else {
-        viewport.style.left = "0";
-        viewport.style.top = "0";
-        viewport.style.transform = "none";
+        rotateRoot.style.left = "0";
+        rotateRoot.style.top = "0";
+        rotateRoot.style.transform = "none";
       }
 
-      container.style.width = Math.round(gameWidth) + "px";
-      container.style.height = Math.round(gameHeight) + "px";
+      // Contain a 16:9 game frame inside the virtual landscape screen.
+      let frameWidth = virtualWidth;
+      let frameHeight = frameWidth / GAME_ASPECT;
 
-      // Keep the canvas drawing buffer in the same 16:9 ratio.
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      const bufferWidth = Math.round(gameWidth * dpr);
-      const bufferHeight = Math.round(gameHeight * dpr);
-
-      if (canvas.width !== bufferWidth) {
-        canvas.width = bufferWidth;
+      if (frameHeight > virtualHeight) {
+        frameHeight = virtualHeight;
+        frameWidth = frameHeight * GAME_ASPECT;
       }
 
-      if (canvas.height !== bufferHeight) {
-        canvas.height = bufferHeight;
+      frameWidth = Math.floor(frameWidth);
+      frameHeight = Math.floor(frameHeight);
+
+      container.style.width = frameWidth + "px";
+      container.style.height = frameHeight + "px";
+
+      // Important: keep Unity render buffer fixed at 1920x1080.
+      // Only CSS scales it visually. This prevents aspect-ratio fighting and UI distortion.
+      if (canvas.width !== GAME_WIDTH) {
+        canvas.width = GAME_WIDTH;
       }
 
+      if (canvas.height !== GAME_HEIGHT) {
+        canvas.height = GAME_HEIGHT;
+      }
+
+      if (unityInstanceRef && unityInstanceRef.Module && unityInstanceRef.Module.setCanvasSize) {
+        unityInstanceRef.Module.setCanvasSize(GAME_WIDTH, GAME_HEIGHT);
+      }
     }
 
     function unityShowBanner(msg, type) {
@@ -262,19 +262,25 @@
       productName: "Kickoff Rise Trader",
       productVersion: BUILD_VERSION,
       showBanner: unityShowBanner,
-      matchWebGLToCanvasSize: true,
+
+      // Do not let Unity/WebGL auto-resize the render buffer to the rotated CSS frame.
+      // We keep the render buffer at 1920x1080 and only scale the HTML frame.
+      matchWebGLToCanvasSize: false,
+      devicePixelRatio: 1
     };
 
-    resizeUnityFrame();
+    applyForcedLandscapeLayout();
 
-    window.addEventListener("resize", resizeUnityFrame);
+    window.addEventListener("resize", applyForcedLandscapeLayout);
     window.addEventListener("orientationchange", () => {
-      setTimeout(resizeUnityFrame, 250);
-      setTimeout(resizeUnityFrame, 600);
+      setTimeout(applyForcedLandscapeLayout, 100);
+      setTimeout(applyForcedLandscapeLayout, 350);
+      setTimeout(applyForcedLandscapeLayout, 800);
     });
 
     if (window.visualViewport) {
-      window.visualViewport.addEventListener("resize", resizeUnityFrame);
+      window.visualViewport.addEventListener("resize", applyForcedLandscapeLayout);
+      window.visualViewport.addEventListener("scroll", applyForcedLandscapeLayout);
     }
 
     loadingBar.style.display = "block";
@@ -287,8 +293,9 @@
         progressBarFull.style.width = (100 * progress) + "%";
       })
         .then((unityInstance) => {
+          unityInstanceRef = unityInstance;
           loadingBar.style.display = "none";
-          resizeUnityFrame();
+          applyForcedLandscapeLayout();
         })
         .catch((message) => {
           alert(message);
@@ -354,7 +361,8 @@
       }
 
       updateFullscreenButton();
-      setTimeout(resizeUnityFrame, 100);
+      setTimeout(applyForcedLandscapeLayout, 100);
+      setTimeout(applyForcedLandscapeLayout, 350);
     }
 
     fullscreenBtn.addEventListener("click", toggleFullscreen);
